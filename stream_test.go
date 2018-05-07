@@ -70,15 +70,20 @@ func failingMapper(ctx context.Context, input interface{}) (output interface{}, 
 	return in, nil
 }
 
+// nopMapper is a Mapper func which just returns the unchanged input values.
+func nopMapper(_ context.Context, input interface{}) (output interface{}, err error) {
+	return input, nil
+}
+
 func TestStreamer(t *testing.T) {
 
 	for testnr, parms := range testCases {
 
 		inIter := &testIter{list: list}
 
-		streamer := NewStreamer(context.Background(), squareMapper, BufSizeOpt(parms.bufSize), WorkersOpt(parms.workers))
+		stream := NewStream(context.Background(), squareMapper, BufSizeOpt(parms.bufSize), WorkersOpt(parms.workers))
 
-		outIter := streamer(inIter)
+		outIter := stream(inIter)
 		defer outIter.Close()
 
 		i := 0
@@ -105,9 +110,9 @@ func TestStreamerReadAfterClose(t *testing.T) {
 
 		inIter := &testIter{list: list}
 
-		streamer := NewStreamer(context.Background(), squareMapper, BufSizeOpt(parms.bufSize), WorkersOpt(parms.workers))
+		stream := NewStream(context.Background(), squareMapper, BufSizeOpt(parms.bufSize), WorkersOpt(parms.workers))
 
-		outIter := streamer(inIter)
+		outIter := stream(inIter)
 
 		_, err := outIter.Next()
 		if err != nil {
@@ -136,9 +141,9 @@ func TestStreamerInjectFailure(t *testing.T) {
 
 		inIter := &testIter{list: list}
 
-		streamer := NewStreamer(context.Background(), failingMapper, BufSizeOpt(parms.bufSize), WorkersOpt(parms.workers))
+		stream := NewStream(context.Background(), failingMapper, BufSizeOpt(parms.bufSize), WorkersOpt(parms.workers))
 
-		outIter := streamer(inIter)
+		outIter := stream(inIter)
 		defer outIter.Close()
 
 		for i := 0; i < len(list); i++ {
@@ -175,9 +180,9 @@ func TestChannelStreamer(t *testing.T) {
 			close(inputChan)
 		}()
 
-		streamer := NewChannelStreamer(context.Background(), squareMapper, BufSizeOpt(parms.bufSize), WorkersOpt(parms.workers))
+		stream := NewChannelStream(context.Background(), squareMapper, BufSizeOpt(parms.bufSize), WorkersOpt(parms.workers))
 
-		outIter := streamer(inputChan, errChan)
+		outIter := stream(inputChan, errChan)
 
 		for i := 0; i < len(list); i++ {
 			a, err := outIter.Next()
@@ -210,9 +215,9 @@ func TestChannelStreamerReadAfterClose(t *testing.T) {
 			close(inputChan)
 		}()
 
-		streamer := NewChannelStreamer(context.Background(), squareMapper, BufSizeOpt(parms.bufSize), WorkersOpt(parms.workers))
+		stream := NewChannelStream(context.Background(), squareMapper, BufSizeOpt(parms.bufSize), WorkersOpt(parms.workers))
 
-		outIter := streamer(inputChan, errChan)
+		outIter := stream(inputChan, errChan)
 
 		_, err := outIter.Next()
 		if err != nil {
@@ -224,9 +229,11 @@ func TestChannelStreamerReadAfterClose(t *testing.T) {
 		// wait for cancel signal to be received
 		time.Sleep(time.Millisecond)
 
-		_, err = outIter.Next()
-		if err != io.EOF {
-			t.Fatalf("test %d: Expected io.EOF", testnr)
+		// only with one worker and no buffers we can be sure to not receive results after a failed Next()
+		if parms.workers == 1 && parms.bufSize == 0 {
+			if _, err := outIter.Next(); err != io.EOF {
+				t.Fatalf("test %d: Expected io.EOF", testnr)
+			}
 		}
 	}
 }
@@ -245,9 +252,9 @@ func TestChannelStreamerInjectFailure(t *testing.T) {
 			close(inputChan)
 		}()
 
-		streamer := NewChannelStreamer(context.Background(), failingMapper, BufSizeOpt(parms.bufSize), WorkersOpt(parms.workers))
+		stream := NewChannelStream(context.Background(), failingMapper, BufSizeOpt(parms.bufSize), WorkersOpt(parms.workers))
 
-		outIter := streamer(inputChan, errChan)
+		outIter := stream(inputChan, errChan)
 		defer outIter.Close()
 
 		for i := 0; i < len(list); i++ {
@@ -261,8 +268,8 @@ func TestChannelStreamerInjectFailure(t *testing.T) {
 			}
 		}
 
-		// only with one worker we can be sure to not receive results after a failed Next()
-		if parms.workers == 1 {
+		// only with one worker and no buffers we can be sure to not receive results after a failed Next()
+		if parms.workers == 1 && parms.bufSize == 0 {
 			if _, err := outIter.Next(); err != io.EOF {
 				t.Fatalf("test %d: Expected io.EOF", testnr)
 			}
@@ -290,8 +297,8 @@ func TestGeneratorStreamer(t *testing.T) {
 			return list[i], nil
 		}
 
-		streamer := NewGeneratorStreamer(context.Background(), NopMapper, BufSizeOpt(parms.bufSize), WorkersOpt(parms.workers))
-		iter := streamer(generator)
+		stream := NewGeneratorStream(context.Background(), nopMapper, BufSizeOpt(parms.bufSize), WorkersOpt(parms.workers))
+		iter := stream(generator)
 		defer iter.Close()
 
 		j := 0
@@ -340,7 +347,7 @@ func TestChaining(t *testing.T) {
 		}
 
 		ctx := context.Background()
-		iter := NewStreamer(ctx, failingMapper)(NewGeneratorStreamer(ctx, NopMapper)(generator))
+		iter := NewStream(ctx, failingMapper)(NewGeneratorStream(ctx, nopMapper)(generator))
 		defer iter.Close()
 
 		j := 0
@@ -397,10 +404,10 @@ func TestContOnError(t *testing.T) {
 		bufSize := BufSizeOpt(parms.bufSize)
 		contOnErr := ContOnErrOpt(true)
 
-		genStreamer := NewGeneratorStreamer(ctx, NopMapper, workers, bufSize, contOnErr)
-		streamer := NewStreamer(ctx, failingMapper, workers, bufSize, contOnErr)
+		genStreamer := NewGeneratorStream(ctx, nopMapper, workers, bufSize, contOnErr)
+		stream := NewStream(ctx, failingMapper, workers, bufSize, contOnErr)
 
-		iter := streamer(genStreamer(generator))
+		iter := stream(genStreamer(generator))
 		defer iter.Close()
 
 		j := 0

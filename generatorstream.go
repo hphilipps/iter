@@ -7,13 +7,17 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+// Generator is the signature of a generator func.
 type Generator func() (interface{}, error)
 
-type GeneratorStreamer func(Generator) Iterator
+// GeneratorStream is a function that creates a new Iterator for processing and streaming of data
+// from the given Generator func.
+type GeneratorStream func(Generator) Iterator
 
-func NewGeneratorStreamer(ctx context.Context, mapper Mapper, opts ...StreamerOpt) GeneratorStreamer {
+// NewGeneratorStream is setting up a GeneratorStream func with the given Mapper func and StreamOpts.
+func NewGeneratorStream(ctx context.Context, mapper Mapper, opts ...StreamOpt) GeneratorStream {
 
-	cfg := NewStreamerConf()
+	cfg := newStreamConf()
 	for _, opt := range opts {
 		opt(cfg)
 	}
@@ -23,14 +27,14 @@ func NewGeneratorStreamer(ctx context.Context, mapper Mapper, opts ...StreamerOp
 
 	myCtx, cancel := context.WithCancel(ctx)
 
-	iter := NewGenericIter(itemChan, errChan, cancel)
+	iter := New(itemChan, errChan, cancel)
 
 	return func(next Generator) Iterator {
 
 		go func() {
 			defer close(itemChan)
 
-			// errgroup for Workers - all Workers will be canceled after the first error
+			// errgroup for worker goroutines - all workers will be canceled after the first error
 			eg, egCtx := errgroup.WithContext(myCtx)
 
 			for i := 0; i < cfg.Workers; i++ {
@@ -50,6 +54,7 @@ func NewGeneratorStreamer(ctx context.Context, mapper Mapper, opts ...StreamerOp
 							if err == io.EOF {
 								return nil
 							}
+
 							select {
 							case errChan <- err:
 								if cfg.ContinueOnError {

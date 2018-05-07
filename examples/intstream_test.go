@@ -2,6 +2,7 @@ package examples
 
 import (
 	"context"
+	"errors"
 	"io"
 	"sync"
 	"testing"
@@ -29,21 +30,27 @@ func (i *testDataIter) Next() (interface{}, error) {
 func (i *testDataIter) Close() {
 }
 
-func charCountWorker(ctx context.Context, input interface{}) (output int, err error) {
-	str := input.(string)
+func charCountMapper(_ context.Context, input interface{}) (output int, err error) {
+	str, ok := input.(string)
+	if !ok {
+		return 0, errors.New("Input is not of type string")
+	}
 	return len(str), nil
 }
 
+// An example of how to use an IntStream. The mapper function has to check the type of the input data.
+// We also could have defined the mapper function to take a concrete type as input instead of interface{}
+// to get compile-time checks.
 func TestIntStreamer(t *testing.T) {
 
 	inIter := &testDataIter{testData: testData}
 
-	streamer := NewIntStreamer(context.Background(), charCountWorker)
+	stream := NewIntStream(context.Background(), charCountMapper)
 
-	outIter := streamer(inIter)
+	outIter := stream(inIter)
 	defer outIter.Close()
 
-	i := 0
+	var i int
 	for i = 0; i < len(testData); i++ {
 		a, err := outIter.Next()
 		if err != nil {
